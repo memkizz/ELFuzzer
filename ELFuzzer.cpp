@@ -1,27 +1,23 @@
-// Elfuzzer.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
-
-#include <iostream>
-
-#include <stdlib.h>
-#include <set>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <stdlib.h>
+#include <set>
 #include <string>
-#ifdef _WIN32
-#include <intrin.h>
-#else
-#include <x86intrin.h>
-#endif
+
+
 
 namespace fs = std::filesystem;
 
 // a structure that will store real time information about the fuzzer statistics
-struct stats {
+typedef struct  {
     int fuzz_cases;
     int crashes;
 
-};
+} stats;
+
+//Global statistics for the fuzzer
+extern stats statistics;
 
 //Get the number of cycles since startup, thus creating a random number
 uint64_t rdtsc()
@@ -43,7 +39,7 @@ class rng {
             bite^= rdtsc();
         }
 
-        void randomize(void) {
+        int randomize(void) {
             int val = bite;
             //let's utilize a common technique to generate a deterministic random number
             bite ^= bite << 13;
@@ -53,11 +49,16 @@ class rng {
     }
 };
 
-int fuzz( char cmd[], unsinged char[] input, char[] filename) {
+int fuzz( char cmd[], unsigned char input[]) {
+
+    //Hash the input, creating a tempoary filename
+    std::hash<unsigned char*> ptr_hash;
+     size_t temp = ptr_hash(input);
+     std::string temp_string = std::to_string(temp);
 
     //Create a tempoary file
-    ofstream fileWriter;
-    fileWriter(filename, ios::binary | ios::out);
+    std::ofstream fileWriter(temp_string);
+    fileWriter(temp_string, ios::binary | ios::out);
     fileWriter.write((char*)&input, sizeof(input));
     fileWriter.close();
 
@@ -71,14 +72,19 @@ int fuzz( char cmd[], unsinged char[] input, char[] filename) {
     if (!pipe) {
         throw std::runtime_error("popen() failed!");
     }
+    //Get the return code
     while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
         result += buffer.data();
     }
+
+    //Cleanup and Update
+    statistics.fuzz_cases++;
+    std::remove(temp_string);
     return result;
     
 }
 
-int thd(std::set<std::string> corpus, int thread_num) {
+int thd(std::set<std::string> corpus, char command[]) {
         //Create RNG
         rng random =  rng();
      
@@ -89,20 +95,30 @@ int thd(std::set<std::string> corpus, int thread_num) {
         for (;;) {
             //pick a random entry from the corpus
             int index = random.randomize() % corpus.size();
-            char[] filename = corpus[index];
-            ifstream fileReader;
-            fileReader(filename, ios::binary | ios::out);
-            while (fileReader) {
-                filename << fileReader;
-            }
+            char filename[] = corpus[index];
 
-            fuzz()
+            //Write this file into a bytearray
+            ifstream fileReader;
+            fileReader(filename, ios::binary | ios::in);
+            fileReader.seekg(0, ios::end);
+            size_t len = fileReader.tellg();
+            char *ret = new char[len];
+            fileReader.read(ret, len);
+            fileReader.close();
+
+
+            int exitcode =fuzz(command, ret);
+
+            if(exitcode >0){
+                statistics.crashes++;
+            }
         }
 }
 
-//input: argv[1]: fuzz command, argv[2]: path to corpus directory
+//input: argv[1]: fuzz command, argv[2]: path to corpus directory, argv[3] number of threads
 int main(int argc, char * argv[])
 {
+    stats live;
 
     std::set<std::string> corpus;
     
@@ -112,16 +128,14 @@ int main(int argc, char * argv[])
     for (const auto& entry : fs::directory_iterator(path)) {
         corpus.insert(entry.path);
     }
+    //Create threads too fuzz concurrently
+    for(int id=0; id< argv[3]; id++){
+        std::thread(thd, corpus, argv[1]);
+    }
+
+    for(;;){
+        io::cout << "Number of fuzz cases" <<statistics.fuzz_cases << endl;
+        io::cout << "Number of crashes:" << statistics.crashes <<endl;
+    }
 
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
